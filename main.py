@@ -1,9 +1,8 @@
 # In TWS -> Configuration -> API -> Settings -> Mark Enalble ActiveX and Socket Clients and unmark Read-Only API
 # Note Socket port
 
-import ibapi
+from math import floor
 import pandas as pd
-import numpy as np
 import yfinance as yf
 import pandas_ta as ta
 import pickle
@@ -14,34 +13,44 @@ from ibapi.order import *
 import threading
 import time
 
+
+def get_slv_price():
+    df = yf.Ticker("SLV")
+    data = df.history()
+    price = data['Close'].iloc[-1]
+    return round(price,2)
+
+
 # Preparing current input data for model
-df = yf.Ticker("SI=F")
-data = df.history(period="max")
-data.drop([column for column in data.columns if column not in ['Open','Close', 'High', 'Low']], axis=1, inplace=True)
-df = yf.Ticker("GC=F")
-gold = df.history(period="max")
-data['Gold'] = gold['Close']
-data['Gold'].fillna(method='ffill', inplace=True)
-windows = [10, 30, 100]
+def generate_signal():
+    df = yf.Ticker("SI=F")
+    data = df.history(period="max")
+    data.drop([column for column in data.columns if column not in ['Open','Close', 'High', 'Low']], axis=1, inplace=True)
+    df = yf.Ticker("GC=F")
+    gold = df.history(period="max")
+    data['Gold'] = gold['Close']
+    data['Gold'].fillna(method='ffill', inplace=True)
+    windows = [10, 30, 100]
 
-for window in windows:
-    data["Silver_"+str(window)] = data['Close'].rolling(window+1).apply(lambda x: (x.iloc[window] - x.iloc[0]) / x.iloc[0] * 100)
-    data["Gold_"+str(window)] = data['Gold'].rolling(window+1).apply(lambda x: (x.iloc[window] - x.iloc[0]) / x.iloc[0] * 100)
+    for window in windows:
+        data["Silver_"+str(window)] = data['Close'].rolling(window+1).apply(lambda x: (x.iloc[window] - x.iloc[0]) / x.iloc[0] * 100)
+        data["Gold_"+str(window)] = data['Gold'].rolling(window+1).apply(lambda x: (x.iloc[window] - x.iloc[0]) / x.iloc[0] * 100)
 
-data['RSI_14']=ta.rsi(data['Close'],lenght=14)
+    data['RSI_14']=ta.rsi(data['Close'],lenght=14)
 
-MACD = ta.macd(data['Close'],fast=12, slow=26, signal=9)
-data = pd.concat([data,MACD],axis=1)
+    MACD = ta.macd(data['Close'],fast=12, slow=26, signal=9)
+    data = pd.concat([data,MACD],axis=1)
 
-STOCH = ta.stoch(high=data.High,low=data.Low,close=data.Close)
-data = pd.concat([data, STOCH], axis=1)
+    STOCH = ta.stoch(high=data.High,low=data.Low,close=data.Close)
+    data = pd.concat([data, STOCH], axis=1)
 
-data.drop(['Open','High','Low','Close','Gold'], axis=1, inplace=True)
+    data.drop(['Open','High','Low','Close','Gold'], axis=1, inplace=True)
 
-model = pickle.load(open('model.sav', 'rb'))
-print(data.iloc[-1])
-should_own_SLV = int(model.predict(data.iloc[-1:])[0])
-print('Current signal: ', should_own_SLV)
+    model = pickle.load(open('model.sav', 'rb'))
+    print(data.iloc[-1])
+    current_signal = int(model.predict(data.iloc[-1:])[0])
+    print('Current signal: ', current_signal)
+    return current_signal
 
 
 
@@ -76,14 +85,14 @@ class Bot:
         # Request real market data
         self.ib.reqRealTimeBars(0, contract, 5, 'TRADES', 1, [])
 
-        if should_own_SLV == 1:
+        if generate_signal() == 1:
 
             # Submit order
             # Create order object
             order = Order()
             order.orderType = 'MKT'
             order.action = 'BUY'
-            quantity = 1
+            quantity = floor(cash_balance / get_slv_price())
             order.totalQuantity = quantity
             # Create Contract Object
             contract = Contract()
@@ -94,7 +103,6 @@ class Bot:
             contract.currency = 'USD'
             # Place the order
             self.ib.placeOrder(1, contract, order)
-
 
 
     # Separate thread for code to run further
